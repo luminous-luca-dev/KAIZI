@@ -12,9 +12,10 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            height: 100vh;
+            min-height: 100vh;
             margin: 0;
             background-color: #f2f2f7;
+            color: #1c1c1e;
         }
         .container {
             text-align: center;
@@ -22,45 +23,120 @@
             background: white;
             border-radius: 16px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            max-width: 320px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .section {
+            margin-bottom: 20px;
+        }
+        .section:last-child {
+            margin-bottom: 0;
+        }
+        h2 {
+            font-size: 18px;
+            margin: 0 0 12px 0;
         }
         input[type="file"] {
             display: none;
         }
         .btn {
-            display: inline-block;
-            padding: 14px 28px;
+            display: block;
+            width: 100%;
+            padding: 14px 0;
             background-color: #007aff;
             color: white;
             border-radius: 10px;
             cursor: pointer;
-            font-size: 16px;
+            font-size: 15px;
             font-weight: bold;
+            text-align: center;
+            box-sizing: border-box;
+        }
+        /* LINE用変換ボタンのスタイル（グリーン） */
+        .btn-line {
+            background-color: #06c755;
+        }
+        .divider {
+            height: 1px;
+            background-color: #e5e5ea;
+            margin: 20px 0;
+        }
+        .sub-text {
+            font-size: 12px;
+            color: #8e8e93;
+            margin-top: 8px;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>HTMLを選択</h2>
-        <label class="btn">
-            ファイルを開く
-            <!-- iPhone内のHTMLファイルだけを選択できるように制限 -->
-            <input type="file" accept=".html" id="fileInput">
-        </label>
+        <!-- 1. 表示機能（.html と .txt の両方に対応） -->
+        <div class="section">
+            <h2>ファイルを表示</h2>
+            <label class="btn">
+                ファイルを開く
+                <input type="file" accept=".html, .txt" id="fileInput">
+            </label>
+            <div class="sub-text">.html または LINEで届いた .txt を選択</div>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- 2. LINE用変換機能 -->
+        <div class="section">
+            <h2>LINE用に変換</h2>
+            <label class="btn btn-line">
+                HTMLをTXTに変換して保存
+                <input type="file" accept=".html" id="convertInput">
+            </label>
+            <div class="sub-text">HTMLを選択するとLINEで送れる.txtに変換</div>
+        </div>
     </div>
 
     <script>
+        // 1. ファイルを開いて画面に描画する処理（.html / .txt 両対応）
         document.getElementById('fileInput').addEventListener('change', function(event) {
             const file = event.target.files[0];
             if (!file) return;
 
-            // 選択されたファイルをテキストとして読み込む
             const reader = new FileReader();
             reader.onload = function(e) {
                 const htmlContent = e.target.result;
-                // 現在の画面をリセットし、読み込んだHTMLの中身で上書きする
                 document.open();
                 document.write(htmlContent);
                 document.close();
+            };
+            reader.readAsText(file);
+        });
+
+        // 2. HTMLをLINE送信用の .txt ファイルに変換して保存する処理
+        document.getElementById('convertInput').addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const content = e.target.result;
+                
+                // テキストファイルとしてBlobを作成
+                const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                
+                // 自動ダウンロード用のリンクを作成して実行
+                const a = document.createElement('a');
+                a.href = url;
+                
+                // 拡張子を .txt に変更して保存
+                const newFileName = file.name.replace(/\.html$/i, '') + '.txt';
+                a.download = newFileName;
+                
+                document.body.appendChild(a);
+                a.click();
+                
+                // クリーンアップ
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
             };
             reader.readAsText(file);
         });
