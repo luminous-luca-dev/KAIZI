@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TXT ⇔ 画像 変換ストレージ</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f2f2f7;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 40px 20px;
+            margin: 0;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            max-width: 400px;
+            width: 100%;
+            margin-bottom: 20px;
+        }
+        h2 { font-size: 18px; margin-top: 0; color: #1c1c1e; border-bottom: 1px solid #e5e5ea; padding-bottom: 10px; }
+        .section { margin-bottom: 24px; }
+        input[type="file"] { display: block; margin-bottom: 10px; width: 100%; }
+        canvas { display: none; } /* 処理用のため非表示 */
+        #preview { max-width: 100%; margin-top: 10px; border-radius: 8px; image-rendering: pixelated; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h2>1. TXT を 画像にする</h2>
+        <div class="section">
+            <input type="file" id="txtInput" accept=".txt">
+            <p style="font-size: 12px; color: #8e8e93;">※生成された画像を長押しして「写真に追加」または「ファイルに保存」してください。</p>
+            <img id="preview" alt="ここに変換後の画像が表示されます">
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>2. 画像 から TXTに戻す</h2>
+        <div class="section">
+            <input type="file" id="imgInput" accept="image/png">
+        </div>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // ==========================================
+        // エンコード処理：TXT -> PNG画像
+        // ==========================================
+        document.getElementById('txtInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(evt) {
+                const text = evt.target.result;
+                
+                // テキストをUTF-8のバイト配列に変換
+                const encoder = new TextEncoder();
+                const bytes = encoder.encode(text);
+                const dataLen = bytes.length;
+
+                // 最初の4バイトにデータの長さを記録する
+                const totalBytes = 4 + dataLen;
+                // 1ピクセルあたりRGBの3バイトを使えるので、必要なピクセル数を計算
+                const pixelsNeeded = Math.ceil(totalBytes / 3);
+                // 画像を正方形にするための1辺の長さを計算
+                const size = Math.ceil(Math.sqrt(pixelsNeeded));
+
+                canvas.width = size;
+                canvas.height = size;
+                const imgData = ctx.createImageData(size, size);
+
+                // データを1つの配列にまとめる
+                const fullData = new Uint8Array(size * size * 3);
+                // 最初の4バイトに長さを格納（32bit整数）
+                fullData[0] = (dataLen >> 24) & 0xff;
+                fullData[1] = (dataLen >> 16) & 0xff;
+                fullData[2] = (dataLen >> 8) & 0xff;
+                fullData[3] = dataLen & 0xff;
+                // 5バイト目以降にテキストデータを格納
+                fullData.set(bytes, 4);
+
+                let dataIdx = 0;
+                // ピクセルデータ(RGBA)に書き込む
+                for (let i = 0; i < imgData.data.length; i += 4) {
+                    imgData.data[i]     = fullData[dataIdx++]; // R
+                    imgData.data[i+1]   = fullData[dataIdx++]; // G
+                    imgData.data[i+2]   = fullData[dataIdx++]; // B
+                    imgData.data[i+3]   = 255;                 // A (不透明度：常にMAX)
+                }
+
+                ctx.putImageData(imgData, 0, 0);
+                
+                // 画像として表示
+                const dataUrl = canvas.toDataURL("image/png");
+                document.getElementById('preview').src = dataUrl;
+            };
+            reader.readAsText(file);
+        });
+
+        // ==========================================
+        // デコード処理：PNG画像 -> TXT
+        // ==========================================
+        document.getElementById('imgInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const img = new Image();
+            const url = URL.createObjectURL(file);
+            
+            img.onload = function() {
+                canvas.width = img.width;
+                canvas.height = img.height;
+                ctx.drawImage(img, 0, 0);
+                
+                const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const extractedBytes = new Uint8Array(canvas.width * canvas.height * 3);
+                
+                let dataIdx = 0;
+                // 画像のRGBAデータからRGBだけを抽出して配列に戻す
+                for (let i = 0; i < imgData.data.length; i += 4) {
+                    extractedBytes[dataIdx++] = imgData.data[i];
+                    extractedBytes[dataIdx++] = imgData.data[i+1];
+                    extractedBytes[dataIdx++] = imgData.data[i+2];
+                }
+
+                // 最初の4バイトから元のデータサイズを読み取る
+                const dataLen = (extractedBytes[0] << 24) | (extractedBytes[1] << 16) | (extractedBytes[2] << 8) | extractedBytes[3];
+                
+                // データサイズ分だけ切り出してテキストに復元
+                const textBytes = extractedBytes.slice(4, 4 + dataLen);
+                const decoder = new TextDecoder();
+                const decodedText = decoder.decode(textBytes);
+
+                // テキストファイルとしてダウンロード
+                const blob = new Blob([decodedText], { type: 'text/plain' });
+                const downloadUrl = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = "restored.txt";
+                document.body.appendChild(a);
+                a.click();
+                
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                URL.revokeObjectURL(downloadUrl);
+            };
+            img.src = url;
+        });
+    </script>
+</body>
+</html>

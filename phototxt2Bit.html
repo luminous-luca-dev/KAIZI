@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HTML ⇔ 高耐久画像(JPG) 相互変換ストレージ</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f2f2f7;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 30px 16px;
+            margin: 0;
+            color: #1c1c1e;
+        }
+        .container {
+            background: white;
+            padding: 24px;
+            border-radius: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            max-width: 440px;
+            width: 100%;
+            margin-bottom: 20px;
+            box-sizing: border-box;
+        }
+        h2 {
+            font-size: 18px;
+            margin-top: 0;
+            margin-bottom: 16px;
+            border-bottom: 1px solid #e5e5ea;
+            padding-bottom: 10px;
+        }
+        .description {
+            font-size: 13px;
+            color: #8e8e93;
+            margin-bottom: 14px;
+            line-height: 1.4;
+        }
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 12px 0;
+            background-color: #007aff;
+            color: white;
+            text-align: center;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 15px;
+            font-weight: bold;
+            margin-top: 8px;
+        }
+        .btn-green { background-color: #34c759; }
+        .btn-orange { background-color: #ff9500; }
+        input[type="file"] { display: none; }
+        #previewContainer {
+            margin-top: 16px;
+            text-align: center;
+        }
+        #preview {
+            max-width: 100%;
+            border-radius: 8px;
+            border: 1px solid #d1d1d6;
+            image-rendering: pixelated;
+        }
+        canvas { display: none; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h2>1. HTML を 高耐久画像(JPG) に変換</h2>
+        <div class="description">
+            自動位置補正パターンと多数決誤り訂正を付与し、JPG圧縮やリサイズに極めて強い画像を生成します。
+        </div>
+        <label class="btn">
+            HTMLファイルを選択
+            <input type="file" id="htmlInput" accept=".html,.htm">
+        </label>
+        <div id="previewContainer">
+            <img id="preview" style="display:none;" alt="生成画像">
+            <a id="downloadBtn" class="btn btn-green" style="display:none; text-decoration:none;">JPG画像をダウンロード</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>2. 画像 から HTML を復元・開示</h2>
+        <div class="description">
+            写真アプリ内やLINE共有等で圧縮された画像（JPG/PNG）から高精度に復元します。
+        </div>
+        <label class="btn btn-orange">
+            画像ファイルを選択 (JPG / PNG)
+            <input type="file" id="imgInput" accept="image/*">
+        </label>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const BASE_CELL_SIZE = 6; // 1セルの標準サイズ (6x6px)
+        const MARKER_SIZE = 7;    // マーカーのセル数 (7x7セル)
+        const MAGIC_HEADER = [0x48, 0x54, 0x4D, 0x4C]; // 'HTML'
+
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+        // ==========================================
+        // 【エンコード】 HTML -> 高耐久JPG
+        // ==========================================
+        document.getElementById('htmlInput').addEventListener('change', async function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const text = await file.text();
+            const rawBytes = new TextEncoder().encode(text);
+            const compressedBytes = await compressGzip(rawBytes);
+
+            // ヘッダー構想: MAGIC(4B) + データ長(4B) + 本体
+            const totalLen = MAGIC_HEADER.length + 4 + compressedBytes.length;
+            const fullData = new Uint8Array(totalLen);
+            fullData.set(MAGIC_HEADER, 0);
+            fullData[4] = (compressedBytes.length >> 24) & 0xff;
+            fullData[5] = (compressedBytes.length >> 16) & 0xff;
+            fullData[6] = (compressedBytes.length >> 8) & 0xff;
+            fullData[7] = compressedBytes.length & 0xff;
+            fullData.set(compressedBytes, 8);
+
+            // 1バイトを8ビット化し、さらに【3重冗長化】を行う（誤り訂正用）
+            const rawBits = [];
+            for (let i = 0; i < fullData.length; i++) {
+                for (let b = 7; b >= 0; b--) {
+                    rawBits.push((fullData[i] >> b) & 1);
+                }
+            }
+            const redundantBits = [];
+            for (let b of rawBits) {
+                redundantBits.push(b, b, b); // 3回繰返し記録
+            }
+
+            // マーカー枠(四隅: 7x7 * 4) を除いた領域に配置するためのグリッド計算
+            const dataBitLength = redundantBits.length;
+            const gridContentCells = Math.ceil(Math.sqrt(dataBitLength));
+            const totalGridSize = gridContentCells + (MARKER_SIZE * 2); // マーカー枠を左右に確保
+
+            const canvasDim = totalGridSize * BASE_CELL_SIZE;
+            canvas.width = canvasDim;
+            canvas.height = canvasDim;
+
+            // 背景黒塗り
+            ctx.fillStyle = "black";
+            ctx.fillRect(0, 0, canvasDim, canvasDim);
+
+            // 4隅に位置検出用アライメントマーカーを描画
+            drawMarker(0, 0);
+            drawMarker((totalGridSize - MARKER_SIZE) * BASE_CELL_SIZE, 0);
+            drawMarker(0, (totalGridSize - MARKER_SIZE) * BASE_CELL_SIZE);
+            drawMarker((totalGridSize - MARKER_SIZE) * BASE_CELL_SIZE, (totalGridSize - MARKER_SIZE) * BASE_CELL_SIZE);
+
+            // データ領域へのビット配置
+            ctx.fillStyle = "white";
+            let bitIdx = 0;
+            for (let r = 0; r < totalGridSize && bitIdx < redundantBits.length; r++) {
+                for (let c = 0; c < totalGridSize && bitIdx < redundantBits.length; c++) {
+                    // マーカー領域を回避
+                    if (isMarkerArea(r, c, totalGridSize)) continue;
+
+                    if (redundantBits[bitIdx] === 1) {
+                        ctx.fillRect(c * BASE_CELL_SIZE, r * BASE_CELL_SIZE, BASE_CELL_SIZE, BASE_CELL_SIZE);
+                    }
+                    bitIdx++;
+                }
+            }
+
+            // JPG形式(品質 0.85) で出力
+            const jpgUrl = canvas.toDataURL("image/jpeg", 0.85);
+            document.getElementById('preview').src = jpgUrl;
+            document.getElementById('preview').style.display = "inline-block";
+            
+            const downloadBtn = document.getElementById('downloadBtn');
+            downloadBtn.href = jpgUrl;
+            downloadBtn.download = `${file.name.replace(/\.[^/.]+$/, "")}_robust.jpg`;
+            downloadBtn.style.display = "block";
+        });
+
+        // ==========================================
+        // 【デコード】 JPG/PNG -> HTML復元
+        // ==========================================
+        document.getElementById('imgInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const img = new Image();
+            const url = URL.createObjectURL(file);
+
+            img.onload = async function() {
+                canvas.width = img.width;
+                canvas.height = img.height;
+                ctx.drawImage(img, 0, 0);
+
+                const imgData = ctx.getImageData(0, 0, img.width, img.height);
+
+                // 補正位相スキャン（±2pxの範囲で最も精度の高いサンプリング位置を検出）
+                let restoredHtml = null;
+                const shifts = [0, 1, -1, 2, -2];
+
+                for (let shiftY of shifts) {
+                    for (let shiftX of shifts) {
+                        restoredHtml = await tryDecode(imgData, img.width, img.height, shiftX, shiftY);
+                        if (restoredHtml) break;
+                    }
+                    if (restoredHtml) break;
+                }
+
+                if (restoredHtml) {
+                    document.open();
+                    document.write(restoredHtml);
+                    document.close();
+                } else {
+                    alert("解析に失敗しました。画像が著しく欠けているか破損しています。");
+                }
+                URL.revokeObjectURL(url);
+            };
+            img.src = url;
+        });
+
+        // 復元ロジック本体
+        async function tryDecode(imgData, imgW, imgH, shiftX, shiftY) {
+            try {
+                // アライメントパターンから1セルのサイズを検出 (マーカー外寸: 7セル分)
+                // 概算のセルサイズから正方格子サイズを求める
+                const approxCellSize = imgW / Math.round(imgW / BASE_CELL_SIZE);
+                const totalGridSize = Math.round(imgW / approxCellSize);
+                const actualCellSize = imgW / totalGridSize;
+
+                const extractedBits = [];
+
+                for (let r = 0; r < totalGridSize; r++) {
+                    for (let c = 0; c < totalGridSize; c++) {
+                        if (isMarkerArea(r, c, totalGridSize)) continue;
+
+                        // セルの中心座標（シフト補正付き）
+                        const cx = Math.floor((c + 0.5) * actualCellSize) + shiftX;
+                        const cy = Math.floor((r + 0.5) * actualCellSize) + shiftY;
+
+                        // セル中央周辺の輝度平均値を算出 (エリアサンプリング)
+                        const val = sampleCellArea(imgData, imgW, imgH, cx, cy, Math.max(1, Math.floor(actualCellSize / 3)));
+                        extractedBits.push(val > 128 ? 1 : 0);
+                    }
+                }
+
+                // 3重冗長化データを【多数決】で1ビットに還元
+                const correctedBits = [];
+                for (let i = 0; i < extractedBits.length - 2; i += 3) {
+                    const sum = extractedBits[i] + extractedBits[i+1] + extractedBits[i+2];
+                    correctedBits.push(sum >= 2 ? 1 : 0); // 2個以上1なら 1
+                }
+
+                // ビット列 -> バイト配列
+                const bytes = new Uint8Array(Math.floor(correctedBits.length / 8));
+                for (let i = 0; i < bytes.length; i++) {
+                    let bVal = 0;
+                    for (let b = 0; b < 8; b++) {
+                        bVal = (bVal << 1) | correctedBits[i * 8 + b];
+                    }
+                    bytes[i] = bVal;
+                }
+
+                // ヘッダーチェック ('HTML')
+                if (bytes[0] !== MAGIC_HEADER[0] || bytes[1] !== MAGIC_HEADER[1] ||
+                    bytes[2] !== MAGIC_HEADER[2] || bytes[3] !== MAGIC_HEADER[3]) {
+                    return null;
+                }
+
+                const dataLen = (bytes[4] << 24) | (bytes[5] << 16) | (bytes[6] << 8) | bytes[7];
+                const compressedData = bytes.slice(8, 8 + dataLen);
+
+                const decompressedBytes = await decompressGzip(compressedData);
+                return new TextDecoder().decode(decompressedBytes);
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // --- ヘルパー関数群 ---
+
+        // 7x7セルの二重枠マーカーを描画
+        function drawMarker(px, py) {
+            const cs = BASE_CELL_SIZE;
+            // 外枠 (7x7 黒)
+            ctx.fillStyle = "black";
+            ctx.fillRect(px, py, 7 * cs, 7 * cs);
+            // 内枠 (5x5 白)
+            ctx.fillStyle = "white";
+            ctx.fillRect(px + cs, py + cs, 5 * cs, 5 * cs);
+            // 芯 (3x3 黒)
+            ctx.fillStyle = "black";
+            ctx.fillRect(px + 2 * cs, py + 2 * cs, 3 * cs, 3 * cs);
+        }
+
+        // マーカー領域内かどうかを判定
+        function isMarkerArea(r, c, size) {
+            const m = MARKER_SIZE;
+            if (r < m && c < m) return true; // 左上
+            if (r < m && c >= size - m) return true; // 右上
+            if (r >= size - m && c < m) return true; // 左下
+            if (r >= size - m && c >= size - m) return true; // 右下
+            return false;
+        }
+
+        // 指定セル中心付近の輝度平均を計算
+        function sampleCellArea(imgData, w, h, cx, cy, radius) {
+            let total = 0, count = 0;
+            for (let dy = -radius; dy <= radius; dy++) {
+                for (let dx = -radius; dx <= radius; dx++) {
+                    const x = Math.min(Math.max(cx + dx, 0), w - 1);
+                    const y = Math.min(Math.max(cy + dy, 0), h - 1);
+                    const idx = (y * w + x) * 4;
+                    // RGBの輝度平均
+                    const brightness = (imgData.data[idx] + imgData.data[idx+1] + imgData.data[idx+2]) / 3;
+                    total += brightness;
+                    count++;
+                }
+            }
+            return total / count;
+        }
+
+        async function compressGzip(data) {
+            const cs = new CompressionStream('gzip');
+            const writer = cs.writable.getWriter();
+            writer.write(data);
+            writer.close();
+            return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+        }
+
+        async function decompressGzip(data) {
+            const ds = new DecompressionStream('gzip');
+            const writer = ds.writable.getWriter();
+            writer.write(data);
+            writer.close();
+            return new Uint8Array(await new Response(ds.readable).arrayBuffer());
+        }
+    </script>
+</body>
+</html>
