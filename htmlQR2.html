@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>超大容量 HTML ⇔ モザイクQR 変換システム (安定版)</title>
+    <!-- URLを修正: jsQR.min.js -> jsQR.js -->
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" defer></script>
+    <style>
+        body { font-family: sans-serif; background-color: #f2f2f7; display: flex; flex-direction: column; align-items: center; padding: 20px; margin: 0; color: #1c1c1e; }
+        .container { background: white; padding: 24px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); max-width: 420px; width: 100%; margin-bottom: 20px; box-sizing: border-box; }
+        h2 { font-size: 18px; margin-top: 0; margin-bottom: 12px; border-bottom: 1px solid #e5e5ea; padding-bottom: 10px; }
+        .description { font-size: 13px; color: #8e8e93; margin-bottom: 16px; line-height: 1.4; }
+        .btn { display: block; width: 100%; padding: 12px 0; background-color: #007aff; color: white; text-align: center; border-radius: 10px; cursor: pointer; font-size: 15px; font-weight: bold; margin-bottom: 10px; }
+        .btn-green { background-color: #34c759; }
+        .btn-orange { background-color: #ff9500; }
+        .btn:disabled { background-color: #c7c7cc; cursor: not-allowed; }
+        input[type="file"] { display: none; }
+        #loading { display: none; color: #ff3b30; font-weight: bold; text-align: center; margin-bottom: 15px; font-size: 14px; }
+        #previewContainer { text-align: center; margin-top: 16px; }
+        #preview { max-width: 100%; border-radius: 8px; border: 1px solid #e5e5ea; }
+        canvas { display: none; }
+    </style>
+</head>
+<body>
+
+    <div id="loading">⏳ ライブラリ読込中 / 処理中...</div>
+
+    <div class="container">
+        <h2>1. 巨大HTML を モザイクQR に変換</h2>
+        <div class="description">90KB級のデータを分割してモザイク画像にします。</div>
+        <label class="btn" id="btnEncodeLabel">
+            HTMLファイルを選択
+            <input type="file" id="htmlInput" accept=".html,.htm">
+        </label>
+        <div id="previewContainer">
+            <img id="preview" style="display:none;" alt="QRコード">
+            <a id="downloadBtn" class="btn btn-green" style="display:none; text-decoration:none; margin-top:10px;">モザイクQRを保存</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>2. モザイクQR から HTML を復元</h2>
+        <label class="btn btn-orange" id="btnDecodeLabel">
+            画像ファイルを選択 (JPG / PNG)
+            <input type="file" id="imgInput" accept="image/*">
+        </label>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        
+        const CHUNK_SIZE = 1500; 
+        const QR_PIXEL_SIZE = 120; 
+        const loadingDiv = document.getElementById('loading');
+
+        // ライブラリの読み込み完了を確実に待機するラッパー
+        function waitForLibraries() {
+            return new Promise((resolve, reject) => {
+                let attempts = 0;
+                const interval = setInterval(() => {
+                    attempts++;
+                    if (typeof QRCode !== 'undefined' && typeof jsQR !== 'undefined') {
+                        clearInterval(interval);
+                        resolve();
+                    } else if (attempts > 30) {
+                        clearInterval(interval);
+                        reject(new Error("外部ライブラリの読み込みにタイムアウトしました。インターネット接続をご確認ください。"));
+                    }
+                }, 100);
+            });
+        }
+
+        document.getElementById('htmlInput').addEventListener('change', async function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            loadingDiv.style.display = "block";
+
+            try {
+                // 実行前に確実にライブラリがロードされているかチェック
+                await waitForLibraries();
+
+                const text = await file.text();
+                const rawBytes = new TextEncoder().encode(text);
+                const compressedBytes = await compressGzip(rawBytes);
+                const base64Str = bytesToBase64(compressedBytes);
+
+                const chunks = [];
+                for (let i = 0; i < base64Str.length; i += CHUNK_SIZE) {
+                    chunks.push(base64Str.substring(i, i + CHUNK_SIZE));
+                }
+
+                const totalN = chunks.length;
+                const cols = Math.ceil(Math.sqrt(totalN));
+                const rows = Math.ceil(totalN / cols);
+
+                canvas.width = cols * QR_PIXEL_SIZE;
+                canvas.height = rows * QR_PIXEL_SIZE;
+                ctx.fillStyle = "white";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                for(let i = 0; i < totalN; i++) {
+                    const payload = `${i}/${totalN}:${chunks[i]}`;
+                    
+                    const qrDataUrl = await QRCode.toDataURL(payload, {
+                        errorCorrectionLevel: 'M',
+                        margin: 2,
+                        width: QR_PIXEL_SIZE
+                    });
+
+                    const img = new Image();
+                    await new Promise(r => {
+                        img.onload = r;
+                        img.src = qrDataUrl;
+                    });
+
+                    const r = Math.floor(i / cols);
+                    const c = i % cols;
+                    ctx.drawImage(img, c * QR_PIXEL_SIZE, r * QR_PIXEL_SIZE);
+                }
+
+                const finalImgUrl = canvas.toDataURL("image/jpeg", 0.85);
+                
+                const previewImg = document.getElementById('preview');
+                const downloadBtn = document.getElementById('downloadBtn');
+                
+                previewImg.src = finalImgUrl;
+                previewImg.style.display = "inline-block";
+                
+                downloadBtn.href = finalImgUrl;
+                downloadBtn.download = `${file.name.replace(/\.[^/.]+$/, "")}_MosaicQR.jpg`;
+                downloadBtn.style.display = "block";
+
+            } catch (err) {
+                alert(`生成に失敗しました: ${err.message}`);
+            } finally {
+                loadingDiv.style.display = "none";
+            }
+        });
+
+        document.getElementById('imgInput').addEventListener('change', async function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            loadingDiv.style.display = "block";
+
+            try {
+                await waitForLibraries();
+
+                const img = new Image();
+                const url = URL.createObjectURL(file);
+
+                img.onload = async function() {
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+
+                    try {
+                        let totalN = null;
+                        const divisions = [1, 2, 3, 4, 5, 6, 7];
+                        
+                        searchTotal:
+                        for (let d of divisions) {
+                            const cellW = img.width / d;
+                            const cellH = img.height / d;
+                            for(let r=0; r<Math.min(d, 3); r++){
+                                for(let c=0; c<Math.min(d, 3); c++){
+                                    const idata = ctx.getImageData(c * cellW, r * cellH, cellW, cellH);
+                                    const code = jsQR(idata.data, idata.width, idata.height, { inversionAttempts: "dontInvert" });
+                                    if (code && code.data) {
+                                        const match = code.data.match(/^(\d+)\/(\d+):/);
+                                        if (match) {
+                                            totalN = parseInt(match[2], 10);
+                                            break searchTotal;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!totalN) throw new Error("画像内に認識可能なQRコードが見つかりません。");
+
+                        const cols = Math.ceil(Math.sqrt(totalN));
+                        const rows = Math.ceil(totalN / cols);
+                        const cellW = img.width / cols;
+                        const cellH = img.height / rows;
+
+                        const decodedChunks = new Array(totalN).fill(null);
+                        let foundCount = 0;
+
+                        for(let i = 0; i < totalN; i++) {
+                            const r = Math.floor(i / cols);
+                            const c = i % cols;
+                            
+                            let x = Math.floor(c * cellW);
+                            let y = Math.floor(r * cellH);
+                            let w = Math.floor(cellW);
+                            let h = Math.floor(cellH);
+
+                            const offsets = [
+                                {dx: 0, dy: 0, scale: 1.0},
+                                {dx: w*0.02, dy: h*0.02, scale: 0.96},
+                                {dx: w*-0.02, dy: h*-0.02, scale: 1.04}
+                            ];
+
+                            for(let offset of offsets) {
+                                const sx = Math.max(0, x + offset.dx);
+                                const sy = Math.max(0, y + offset.dy);
+                                const sw = Math.min(img.width - sx, w * offset.scale);
+                                const sh = Math.min(img.height - sy, h * offset.scale);
+                                
+                                const idata = ctx.getImageData(sx, sy, sw, sh);
+                                const code = jsQR(idata.data, idata.width, idata.height, { inversionAttempts: "attemptBoth" });
+                                
+                                if(code && code.data) {
+                                    const match = code.data.match(/^(\d+)\/(\d+):(.*)$/);
+                                    if(match) {
+                                        const idx = parseInt(match[1], 10);
+                                        if(!decodedChunks[idx]) {
+                                            decodedChunks[idx] = match[3];
+                                            foundCount++;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (foundCount !== totalN) {
+                            const missing = [];
+                            decodedChunks.forEach((chunk, idx) => { if(!chunk) missing.push(idx); });
+                            throw new Error(`全${totalN}個中、${totalN - foundCount}個のデータが欠損しています。\n欠損番号: ${missing.join(', ')}`);
+                        }
+
+                        const fullBase64 = decodedChunks.join('');
+                        const compressedBytes = base64ToBytes(fullBase64);
+                        const decompressedBytes = await decompressGzip(compressedBytes);
+                        const htmlText = new TextDecoder().decode(decompressedBytes);
+
+                        document.open();
+                        document.write(htmlText);
+                        document.close();
+
+                    } catch (err) {
+                        alert(`復元エラー: ${err.message}`);
+                    } finally {
+                        loadingDiv.style.display = "none";
+                        URL.revokeObjectURL(url);
+                    }
+                };
+                img.src = url;
+
+            } catch (err) {
+                alert(`エラー: ${err.message}`);
+                loadingDiv.style.display = "none";
+            }
+        });
+
+        async function compressGzip(data) {
+            const cs = new CompressionStream('gzip');
+            const writer = cs.writable.getWriter();
+            writer.write(data);
+            writer.close();
+            return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+        }
+
+        async function decompressGzip(data) {
+            const ds = new DecompressionStream('gzip');
+            const writer = ds.writable.getWriter();
+            writer.write(data);
+            writer.close();
+            return new Uint8Array(await new Response(ds.readable).arrayBuffer());
+        }
+
+        function bytesToBase64(bytes) {
+            let binary = '';
+            const chunkSize = 8192;
+            for (let i = 0; i < bytes.length; i += chunkSize) {
+                const chunk = bytes.subarray(i, i + chunkSize);
+                binary += String.fromCharCode.apply(null, chunk);
+            }
+            return btoa(binary);
+        }
+
+        function base64ToBytes(base64) {
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+            return bytes;
+        }
+    </script>
+</body>
+</html>
