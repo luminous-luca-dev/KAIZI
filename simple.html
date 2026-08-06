@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HTML開示だな</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f2f2f7;
+        }
+        .container {
+            text-align: center;
+            padding: 30px;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        input[type="file"] {
+            display: none;
+        }
+        .btn {
+            display: inline-block;
+            padding: 14px 28px;
+            background-color: #007aff;
+            color: white;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>HTMLを選択</h2>
+        <label class="btn">
+            ファイルを開く
+            <!-- iPhone内のHTMLファイルだけを選択できるように制限 -->
+            <input type="file" accept=".html" id="fileInput">
+        </label>
+    </div>
+
+    <script>
+        document.getElementById('fileInput').addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            // 選択されたファイルをテキストとして読み込む
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const htmlContent = e.target.result;
+                // 現在の画面をリセットし、読み込んだHTMLの中身で上書きする
+                document.open();
+                document.write(htmlContent);
+                document.close();
+            };
+            reader.readAsText(file);
+        });
+    </script>
+</body>
+</html>
